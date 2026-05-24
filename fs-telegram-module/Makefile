@@ -1,7 +1,7 @@
 obj-m += fs_telegram.o
 
 KDIR ?= /lib/modules/$(shell uname -r)/build
-PWD := $(shell pwd)
+
 
 all: module client
 

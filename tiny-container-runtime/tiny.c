@@ -17,6 +17,10 @@
 #define CHECK(cmd, msg) if ((cmd) < 0) { perror(msg); exit(EXIT_FAILURE); }
 
 
+#define TINY_IOC_MAGIC 'T'
+#define TINY_IOC_REGISTER_CONTAINER _IOW(TINY_IOC_MAGIC, 1, pid_t)
+
+
 struct container_config {
     char **argv;
 };
@@ -108,6 +112,18 @@ int command_run(int argc, char **argv) {
     printf("container created, host pid: %d\n", child_pid);
 
     setup_cgroups(child_pid);
+
+    int monitor_fd = open("/dev/tiny_monitor", O_RDWR);
+    if (monitor_fd >= 0) {
+        if (ioctl(monitor_fd, TINY_IOC_REGISTER_CONTAINER, &child_pid) < 0) {
+            perror("ioctl registe failedr");
+        } else {
+            printf("ioctl register success\n");
+        }
+        close(monitor_fd);
+    } else {
+        printf("/dev/tiny_monitor not found - stats disabled\n");
+    }
 
     waitpid(child_pid, NULL, 0);
     printf("container stopped\n");
