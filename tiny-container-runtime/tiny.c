@@ -156,9 +156,56 @@ int command_exec(int argc, char **argv) {
     return EXIT_SUCCESS;
 }
 
+int command_pod(int argc, char **argv) {
+    if (argc < 4) {
+        fprintf(stderr, "Usage: %s pod <host_pid> <command>\n", argv[0]);
+        return EXIT_FAILURE;
+    }
+
+    const char *pid_str = argv[2];
+    char path[256];
+
+    const char *shared_namespaces[] = {"uts", "ipc", "net", NULL};
+
+    printf("joining pod environment of %s...\n", pid_str);
+
+    for (int i = 0; shared_namespaces[i] != NULL; i++) {
+        snprintf(path, sizeof(path), "/proc/%s/ns/%s", pid_str, shared_namespaces[i]);
+        int fd = open(path, O_RDONLY | O_CLOEXEC);
+        if (fd >= 0) {
+            CHECK(setns(fd, 0), "setns pod");
+            close(fd);
+        }
+    }
+
+    printf("booting up a new container inside the pod...\n");
+    struct container_config config = { .argv = &argv[3] };
+
+    char *stack = malloc(STACK_SIZE);
+    if (!stack) {
+        perror("malloc");
+        return EXIT_FAILURE;
+    }
+
+    int clone_flags = CLONE_NEWPID | CLONE_NEWNS | SIGCHLD;
+    pid_t child_pid = clone(container_entrypoint, stack + STACK_SIZE, clone_flags, &config);
+    CHECK(child_pid, "clone");
+
+    printf("pod container created, host pid: %d\n", child_pid);
+
+    setup_cgroups(child_pid);
+
+    waitpid(child_pid, NULL, 0);
+    printf("pod container stopped\n");
+
+    free(stack);
+    return EXIT_SUCCESS;
+}
+
+
 int main(int argc, char **argv) {
     if (argc < 2) {
-        fprintf(stderr, "Usage: %s <run|exec> <args...>\n", argv[0]);
+        fprintf(stderr, "Usage: %s <run|exec|pod> <args...>\n", argv[0]);
         return EXIT_FAILURE;
     }
 
@@ -166,6 +213,8 @@ int main(int argc, char **argv) {
         return command_run(argc, argv);
     } else if (strcmp(argv[1], "exec") == 0) {
         return command_exec(argc, argv);
+    } else if (strcmp(argv[1], "pod") == 0) {
+        return command_pod(argc, argv);
     } else {
         fprintf(stderr, "Unknown command: %s\n", argv[1]);
         return EXIT_FAILURE;
