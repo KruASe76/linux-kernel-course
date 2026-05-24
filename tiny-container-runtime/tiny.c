@@ -10,7 +10,7 @@
 #include <unistd.h>
 
 
-#define CONTAINER_ROOT "./container_rootfs"
+#define CONTAINER_ROOT "/container_rootfs"
 #define STACK_SIZE (1024 * 1024) // i guess 1mb would be enough
 
 // a handy macros
@@ -73,7 +73,7 @@ void setup_fs() {
 int container_entrypoint(void *arg) {
     struct container_config *config = arg;
 
-    printf("inside container");
+    printf("inside container\n");
     printf("pid: %d\n", getpid());
 
     CHECK(sethostname("tiny-box", 8), "sethostname");
@@ -82,19 +82,18 @@ int container_entrypoint(void *arg) {
     char *envp[] = { "PATH=/bin", NULL };
     CHECK(execvpe(config->argv[0], config->argv, envp), "execvpe");
 
-    return 0; // never landing here if execvpe succeeds
+    return 0;
 }
 
 
-int main(int argc, char **argv) {
-    if (argc < 2) {
-        fprintf(stderr, "Usage: %s <command>\n", argv[0]);
+int command_run(int argc, char **argv) {
+    if (argc < 3) {
+        fprintf(stderr, "Usage: %s run <command>\n", argv[0]);
         return EXIT_FAILURE;
     }
 
     printf("booting up a container...\n");
-
-    struct container_config config = { .argv = &argv[1] };
+    struct container_config config = { .argv = &argv[2] };
 
     char *stack = malloc(STACK_SIZE);
     if (!stack) {
@@ -103,7 +102,6 @@ int main(int argc, char **argv) {
     }
 
     int clone_flags = CLONE_NEWPID | CLONE_NEWUTS | CLONE_NEWNS | SIGCHLD;
-
     pid_t child_pid = clone(container_entrypoint, stack + STACK_SIZE, clone_flags, &config);
     CHECK(child_pid, "clone");
 
@@ -116,4 +114,60 @@ int main(int argc, char **argv) {
 
     free(stack);
     return EXIT_SUCCESS;
+}
+
+int command_exec(int argc, char **argv) {
+    if (argc < 4) {
+        fprintf(stderr, "Usage: %s exec <host_pid> <command>\n", argv[0]);
+        return EXIT_FAILURE;
+    }
+
+    const char *pid_str = argv[2];
+    char path[256];
+
+    const char *namespaces[] = {"cgroup", "ipc", "uts", "net", "pid", "mnt", NULL};
+
+    printf("jumping into container %s...\n", pid_str);
+
+    for (int i = 0; namespaces[i] != NULL; i++) {
+        snprintf(path, sizeof(path), "/proc/%s/ns/%s", pid_str, namespaces[i]);
+        int fd = open(path, O_RDONLY | O_CLOEXEC);
+        if (fd >= 0) {
+            CHECK(setns(fd, 0), "setns");
+            close(fd);
+        }
+    }
+
+    pid_t pid = fork();
+    CHECK(pid, "fork");
+
+    if (pid == 0) {
+        char root_path[256];
+        snprintf(root_path, sizeof(root_path), "/proc/%s/root", pid_str);
+
+        CHECK(chroot(root_path), "chroot into container root");
+        CHECK(chdir("/"), "chdir into /");
+
+        char *envp[] = { "PATH=/bin", NULL };
+        CHECK(execvpe(argv[3], &argv[3], envp), "execvpe");
+    }
+
+    waitpid(pid, NULL, 0);
+    return EXIT_SUCCESS;
+}
+
+int main(int argc, char **argv) {
+    if (argc < 2) {
+        fprintf(stderr, "Usage: %s <run|exec> <args...>\n", argv[0]);
+        return EXIT_FAILURE;
+    }
+
+    if (strcmp(argv[1], "run") == 0) {
+        return command_run(argc, argv);
+    } else if (strcmp(argv[1], "exec") == 0) {
+        return command_exec(argc, argv);
+    } else {
+        fprintf(stderr, "Unknown command: %s\n", argv[1]);
+        return EXIT_FAILURE;
+    }
 }
